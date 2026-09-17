@@ -13,6 +13,7 @@
 
 #include "app/app.h"
 #include "app/document.h"
+#include "app/file_selector.h"
 #include "app/ini_file.h"
 #include "app/loop_tag.h"
 #include "app/modules/editors.h"
@@ -30,12 +31,16 @@
 #include "doc/sprite.h"
 #include "gfx/rect.h"
 #include "ui/base.h"
+#include "ui/alert.h"
+#include "ui/box.h"
 #include "ui/button.h"
 #include "ui/close_event.h"
 #include "ui/message.h"
 #include "ui/system.h"
 
 #include "doc/frame_tag.h"
+
+#include <functional>
 
 namespace app {
 
@@ -176,11 +181,97 @@ private:
   bool m_isPlaying;
 };
 
+class MiniShaderButton : public SkinButton<Button> {
+public:
+  MiniShaderButton()
+    : SkinButton<Button>(
+      SkinTheme::instance()->parts.windowPlayButtonNormal(),
+      SkinTheme::instance()->parts.windowPlayButtonHot(),
+      SkinTheme::instance()->parts.windowPlayButtonSelected())
+  {
+    setDecorative(true);
+  }
+
+  base::Signal0<void> Toggle;
+
+  void setCrtEnabled(bool enabled) {
+    setSelected(enabled);
+  }
+
+protected:
+  void onClick(Event& ev) override {
+    (void)ev;
+    Toggle();
+  }
+
+  bool onProcessMessage(Message* msg) override
+  {
+    switch (msg->type()) {
+
+      case kSetCursorMessage:
+        ui::set_mouse_cursor(kArrowCursor);
+        return true;
+
+      case kMouseUpMessage:
+        if (hasCapture()) {
+          releaseMouse();
+          Toggle();
+          return true;
+        }
+        break;
+    }
+
+    return SkinButton<Button>::onProcessMessage(msg);
+  }
+
+  void onPaint(PaintEvent& ev) override {
+    SkinButton<Button>::onPaint(ev);
+
+    SkinTheme* theme = SkinTheme::instance();
+    Graphics* g = ev.graphics();
+    auto oldFont = g->font();
+    if (theme->getMiniFont())
+      g->setFont(theme->getMiniFont());
+
+    gfx::Size textSize = g->measureUIString("CRT");
+    gfx::Rect rc = clientBounds();
+    int x = rc.x + (rc.w - textSize.w) / 2;
+    int y = rc.y + (rc.h - textSize.h) / 2 + 2*guiscale();
+    g->drawUIString(
+      "CRT",
+      isSelected() ? theme->colors.buttonSelectedText(): theme->colors.buttonNormalText(),
+      gfx::ColorNone,
+      gfx::Point(x, y));
+
+    g->setFont(oldFont);
+  }
+
+  void onSetDecorativeWidgetBounds() override {
+    SkinTheme* theme = static_cast<SkinTheme*>(this->theme());
+    Widget* window = parent();
+    gfx::Rect rect(0, 0, 0, 0);
+    gfx::Size iconSize = theme->parts.windowPlayButtonNormal()->size();
+    gfx::Size closeSize = theme->parts.windowCloseButtonNormal()->size();
+
+    rect.w = iconSize.w + 10*guiscale();
+    rect.h = iconSize.h;
+
+    rect.offset(window->bounds().x2() - 3*guiscale()
+      - rect.w - 1*guiscale()
+      - iconSize.w - 1*guiscale()
+      - iconSize.w - 1*guiscale() - closeSize.w,
+      window->bounds().y + 3*guiscale());
+
+    setBounds(rect);
+  }
+};
+
 PreviewEditorWindow::PreviewEditorWindow()
   : Window(WithTitleBar, "Preview")
   , m_docView(NULL)
   , m_centerButton(new MiniCenterButton())
   , m_playButton(new MiniPlayButton())
+  , m_shaderButton(new MiniShaderButton())
   , m_refFrame(0)
   , m_aniSpeed(1.0)
   , m_relatedEditor(nullptr)
@@ -203,14 +294,22 @@ PreviewEditorWindow::PreviewEditorWindow()
   m_centerButton->Click.connect(base::Bind<void>(&PreviewEditorWindow::onCenterClicked, this));
   m_playButton->Click.connect(base::Bind<void>(&PreviewEditorWindow::onPlayClicked, this));
   m_playButton->Popup.connect(base::Bind<void>(&PreviewEditorWindow::onPopupSpeed, this));
+  static_cast<MiniShaderButton*>(m_shaderButton)->Toggle.connect(
+    base::Bind<void>(&PreviewEditorWindow::onShaderClicked, this));
+
+  m_shaderStack.loadConfig();
+  static_cast<MiniShaderButton*>(m_shaderButton)->setCrtEnabled(
+    m_shaderStack.crtEffect().enabled);
 
   addChild(m_centerButton);
   addChild(m_playButton);
+  addChild(m_shaderButton);
 }
 
 PreviewEditorWindow::~PreviewEditorWindow()
 {
   set_config_bool("MiniEditor", "Enabled", m_isEnabled);
+  m_shaderStack.saveConfig();
 }
 
 void PreviewEditorWindow::setPreviewEnabled(bool state)
@@ -218,6 +317,15 @@ void PreviewEditorWindow::setPreviewEnabled(bool state)
   m_isEnabled = state;
 
   updateUsingEditor(current_editor);
+}
+
+void PreviewEditorWindow::reloadCrtSettings()
+{
+  m_shaderStack.loadPreferences();
+  m_shaderStack.saveConfig();
+  static_cast<MiniShaderButton*>(m_shaderButton)->setCrtEnabled(
+    m_shaderStack.crtEffect().enabled);
+  onShaderStackChanged();
 }
 
 bool PreviewEditorWindow::onProcessMessage(ui::Message* msg)
@@ -326,6 +434,23 @@ void PreviewEditorWindow::onPopupSpeed()
   m_aniSpeed = miniEditor->getAnimationSpeedMultiplier();
 }
 
+void PreviewEditorWindow::onShaderStackChanged()
+{
+  m_shaderStack.saveConfig();
+
+  Editor* miniEditor = (m_docView ? m_docView->editor(): nullptr);
+  if (miniEditor)
+    miniEditor->updateEditor();
+}
+
+void PreviewEditorWindow::onShaderClicked()
+{
+  bool enabled = !m_shaderStack.crtEffect().enabled;
+  m_shaderStack.setCrtEnabled(enabled);
+  static_cast<MiniShaderButton*>(m_shaderButton)->setCrtEnabled(enabled);
+  onShaderStackChanged();
+}
+
 void PreviewEditorWindow::updateUsingEditor(Editor* editor)
 {
   if (!m_isEnabled || !editor) {
@@ -357,6 +482,7 @@ void PreviewEditorWindow::updateUsingEditor(Editor* editor)
     addChild(m_docView);
 
     miniEditor = m_docView->editor();
+    miniEditor->setPreviewShaderStack(&m_shaderStack);
     miniEditor->setZoom(render::Zoom::fromScale(docPref.preview.zoom()));
     miniEditor->setLayer(editor->layer());
     miniEditor->setFrame(editor->frame());

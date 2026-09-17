@@ -11,6 +11,7 @@
           <listitem text="Timeline" value="section_timeline" />
           <listitem text="Cursors" value="section_cursors" />
           <listitem text="Grid &amp;&amp; Background" value="section_grid" />
+          <listitem text="CRT Preview" value="section_crt" />
           <listitem text="Undo" value="section_undo" />
           <listitem text="Theme" value="section_theme" />
           <listitem text="Experimental" value="section_experimental" />
@@ -159,6 +160,58 @@
 	    <hbox expansive="true" />
             <button id="reset" text="Reset" width="60" />
 	  </hbox>
+        </vbox>
+
+        <!-- CRT preview -->
+        <vbox id="section_crt">
+          <separator text="CRT Preview" horizontal="true" />
+          <check id="crt_enabled" text="Enable CRT preview effect" />
+
+          <separator text="Layers" horizontal="true" />
+          <check id="crt_horizontal_blur_enabled" text="Horizontal blur" />
+          <check id="crt_scanline_enabled" text="Scanline taper" />
+          <check id="crt_bloom_enabled" text="Bloom" />
+
+          <separator text="Parameters" horizontal="true" />
+          <grid columns="3">
+            <label text="Overall Strength:" />
+            <slider id="crt_strength" min="0" max="200" width="128" />
+            <entry id="crt_strength_entry" maxsize="6" />
+
+            <label text="Blur Radius:" />
+            <slider id="crt_horizontal_blur_radius" min="0" max="320" width="128" />
+            <entry id="crt_horizontal_blur_radius_entry" maxsize="6" />
+
+            <label text="Scanline Opacity:" />
+            <slider id="crt_scanline_strength" min="0" max="100" width="128" />
+            <entry id="crt_scanline_strength_entry" maxsize="6" />
+
+            <label text="Scanline Range:" />
+            <slider id="crt_scanline_power" min="10" max="800" width="128" />
+            <entry id="crt_scanline_power_entry" maxsize="6" />
+
+            <label text="Bloom Strength:" />
+            <slider id="crt_bloom_strength" min="0" max="150" width="128" />
+            <entry id="crt_bloom_strength_entry" maxsize="6" />
+
+            <label text="Bloom Radius:" />
+            <slider id="crt_bloom_radius" min="0" max="320" width="128" />
+            <entry id="crt_bloom_radius_entry" maxsize="6" />
+
+            <label text="Bloom Threshold:" />
+            <slider id="crt_bloom_threshold" min="0" max="255" width="128" />
+            <entry id="crt_bloom_threshold_entry" maxsize="6" />
+
+            <label text="Redraw Neighbors:" />
+            <slider id="crt_redraw_padding" min="0" max="8" width="128" />
+            <entry id="crt_redraw_padding_entry" maxsize="3" />
+          </grid>
+
+          <hbox>
+            <boxfiller />
+            <button id="crt_reset_defaults" text="Reset Default Value" width="120" />
+            <button id="crt_save_defaults" text="Save Current Value as Default" width="160" />
+          </hbox>
         </vbox>
 
         <!-- Undo -->

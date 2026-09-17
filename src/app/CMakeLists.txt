@@ -435,6 +435,7 @@ add_library(app-lib
   ui/palette_listbox.cpp
   ui/popup_window_pin.cpp
   ui/preview_editor.cpp
+  ui/preview_shader_stack.cpp
   ui/recent_listbox.cpp
   ui/search_entry.cpp
   ui/select_accelerator.cpp

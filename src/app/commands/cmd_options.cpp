@@ -19,6 +19,9 @@
 #include "app/resource_finder.h"
 #include "app/send_crash.h"
 #include "app/ui/color_button.h"
+#include "app/ui/main_window.h"
+#include "app/ui/preview_editor.h"
+#include "app/ui/preview_shader_stack.h"
 #include "base/bind.h"
 #include "base/convert_to.h"
 #include "base/fs.h"
@@ -31,9 +34,27 @@
 
 #include "options.xml.h"
 
+#include <cmath>
+
 namespace app {
 
 static const char* kSectionThemeId = "section_theme";
+static const char* kCrtDefaultsSection = "PreviewCrtDefaults";
+
+struct CrtDefaults {
+  bool enabled = true;
+  double strength = 1.0;
+  bool blurEnabled = true;
+  double blurRadius = 1.0;
+  bool scanlineEnabled = true;
+  double scanlineOpacity = 0.50;
+  double scanlineRange = 5.83;
+  bool bloomEnabled = true;
+  double bloomStrength = 0.40;
+  double bloomRadius = 2.6;
+  double bloomThreshold = 27.0;
+  int redrawPadding = 1;
+};
 
 using namespace ui;
 
@@ -229,6 +250,10 @@ public:
     undoGotoModified()->setSelected(m_pref.undo.gotoModified());
     undoAllowNonlinearHistory()->setSelected(m_pref.undo.allowNonlinearHistory());
 
+    setupCrtControls();
+    crtResetDefaults()->Click.connect(base::Bind<void>(&OptionsWindow::onCrtResetDefaults, this));
+    crtSaveDefaults()->Click.connect(base::Bind<void>(&OptionsWindow::onCrtSaveDefaults, this));
+
     // Theme buttons
     themeList()->Change.connect(base::Bind<void>(&OptionsWindow::onThemeChange, this));
     selectTheme()->Click.connect(base::Bind<void>(&OptionsWindow::onSelectTheme, this));
@@ -314,6 +339,19 @@ public:
     m_pref.undo.gotoModified(undoGotoModified()->isSelected());
     m_pref.undo.allowNonlinearHistory(undoAllowNonlinearHistory()->isSelected());
 
+    m_pref.preview.crtEnabled(crtEnabled()->isSelected());
+    m_pref.preview.crtStrength(crtDoubleValue(crtStrength(), 100.0));
+    m_pref.preview.crtHorizontalBlurEnabled(crtHorizontalBlurEnabled()->isSelected());
+    m_pref.preview.crtHorizontalBlurRadius(crtDoubleValue(crtHorizontalBlurRadius(), 10.0));
+    m_pref.preview.crtScanlineEnabled(crtScanlineEnabled()->isSelected());
+    m_pref.preview.crtScanlineStrength(crtDoubleValue(crtScanlineStrength(), 100.0));
+    m_pref.preview.crtScanlinePower(crtDoubleValue(crtScanlinePower(), 100.0));
+    m_pref.preview.crtBloomEnabled(crtBloomEnabled()->isSelected());
+    m_pref.preview.crtBloomStrength(crtDoubleValue(crtBloomStrength(), 100.0));
+    m_pref.preview.crtBloomRadius(crtDoubleValue(crtBloomRadius(), 10.0));
+    m_pref.preview.crtBloomThreshold(crtDoubleValue(crtBloomThreshold(), 1.0));
+    m_pref.preview.crtRedrawPadding(crtRedrawPadding()->getValue());
+
     // Experimental features
     m_pref.experimental.useNativeCursor(nativeCursor()->isSelected());
     m_pref.experimental.useNativeFileDialog(nativeFileDialog()->isSelected());
@@ -343,6 +381,15 @@ public:
 
     m_pref.save();
 
+    PreviewShaderStack stack;
+    stack.loadPreferences();
+    stack.saveConfig();
+
+    if (App::instance()->mainWindow() &&
+        App::instance()->mainWindow()->getPreviewEditor()) {
+      App::instance()->mainWindow()->getPreviewEditor()->reloadCrtSettings();
+    }
+
     if (!warnings.empty()) {
       ui::Alert::show((PACKAGE "<<" + app::i18n("You must restart the program to see your changes to:") + warnings + "||&OK").c_str());
     }
@@ -368,6 +415,134 @@ private:
     // Load themes
     if (item->getValue() == kSectionThemeId)
       loadThemes();
+  }
+
+  static int crtSliderValue(double value, double scale, int minValue, int maxValue) {
+    return MID(minValue, int(std::round(value * scale)), maxValue);
+  }
+
+  static double crtDoubleValue(Slider* slider, double scale) {
+    return double(slider->getValue()) / scale;
+  }
+
+  static void setCrtNumber(Slider* slider, Entry* entry, double value, double scale) {
+    slider->setValue(crtSliderValue(value, scale, slider->getMinValue(), slider->getMaxValue()));
+    entry->setTextf("%.3g", crtDoubleValue(slider, scale));
+  }
+
+  void setCrtControls(const CrtDefaults& values) {
+    crtEnabled()->setSelected(values.enabled);
+    crtHorizontalBlurEnabled()->setSelected(values.blurEnabled);
+    crtScanlineEnabled()->setSelected(values.scanlineEnabled);
+    crtBloomEnabled()->setSelected(values.bloomEnabled);
+
+    setCrtNumber(crtStrength(), crtStrengthEntry(), values.strength, 100.0);
+    setCrtNumber(crtHorizontalBlurRadius(), crtHorizontalBlurRadiusEntry(), values.blurRadius, 10.0);
+    setCrtNumber(crtScanlineStrength(), crtScanlineStrengthEntry(), values.scanlineOpacity, 100.0);
+    setCrtNumber(crtScanlinePower(), crtScanlinePowerEntry(), values.scanlineRange, 100.0);
+    setCrtNumber(crtBloomStrength(), crtBloomStrengthEntry(), values.bloomStrength, 100.0);
+    setCrtNumber(crtBloomRadius(), crtBloomRadiusEntry(), values.bloomRadius, 10.0);
+    setCrtNumber(crtBloomThreshold(), crtBloomThresholdEntry(), values.bloomThreshold, 1.0);
+    setCrtNumber(crtRedrawPadding(), crtRedrawPaddingEntry(), values.redrawPadding, 1.0);
+  }
+
+  void bindCrtNumber(Slider* slider, Entry* entry, double scale) {
+    slider->Change.connect([slider, entry, scale] {
+      entry->setTextf("%.3g", crtDoubleValue(slider, scale));
+    });
+    entry->Change.connect([slider, entry, scale] {
+      slider->setValue(crtSliderValue(
+        entry->textDouble(),
+        scale,
+        slider->getMinValue(),
+        slider->getMaxValue()));
+      entry->setTextf("%.3g", crtDoubleValue(slider, scale));
+    });
+  }
+
+  void setupCrtControls() {
+    auto& preview = m_pref.preview;
+
+    setCrtControls({
+      preview.crtEnabled(),
+      preview.crtStrength(),
+      preview.crtHorizontalBlurEnabled(),
+      preview.crtHorizontalBlurRadius(),
+      preview.crtScanlineEnabled(),
+      preview.crtScanlineStrength(),
+      preview.crtScanlinePower(),
+      preview.crtBloomEnabled(),
+      preview.crtBloomStrength(),
+      preview.crtBloomRadius(),
+      preview.crtBloomThreshold(),
+      preview.crtRedrawPadding()
+    });
+
+    bindCrtNumber(crtStrength(), crtStrengthEntry(), 100.0);
+    bindCrtNumber(crtHorizontalBlurRadius(), crtHorizontalBlurRadiusEntry(), 10.0);
+    bindCrtNumber(crtScanlineStrength(), crtScanlineStrengthEntry(), 100.0);
+    bindCrtNumber(crtScanlinePower(), crtScanlinePowerEntry(), 100.0);
+    bindCrtNumber(crtBloomStrength(), crtBloomStrengthEntry(), 100.0);
+    bindCrtNumber(crtBloomRadius(), crtBloomRadiusEntry(), 10.0);
+    bindCrtNumber(crtBloomThreshold(), crtBloomThresholdEntry(), 1.0);
+    bindCrtNumber(crtRedrawPadding(), crtRedrawPaddingEntry(), 1.0);
+  }
+
+  CrtDefaults savedCrtDefaults() const {
+    CrtDefaults values;
+    values.enabled = get_config_bool(kCrtDefaultsSection, "Enabled", values.enabled);
+    values.strength = get_config_double(kCrtDefaultsSection, "Strength", values.strength);
+    values.blurEnabled = get_config_bool(kCrtDefaultsSection, "HorizontalBlurEnabled", values.blurEnabled);
+    values.blurRadius = get_config_double(kCrtDefaultsSection, "HorizontalBlurRadius", values.blurRadius);
+    values.scanlineEnabled = get_config_bool(kCrtDefaultsSection, "ScanlineEnabled", values.scanlineEnabled);
+    values.scanlineOpacity = get_config_double(kCrtDefaultsSection, "ScanlineOpacity", values.scanlineOpacity);
+    values.scanlineRange = get_config_double(kCrtDefaultsSection, "ScanlineRange", values.scanlineRange);
+    values.bloomEnabled = get_config_bool(kCrtDefaultsSection, "BloomEnabled", values.bloomEnabled);
+    values.bloomStrength = get_config_double(kCrtDefaultsSection, "BloomStrength", values.bloomStrength);
+    values.bloomRadius = get_config_double(kCrtDefaultsSection, "BloomRadius", values.bloomRadius);
+    values.bloomThreshold = get_config_double(kCrtDefaultsSection, "BloomThreshold", values.bloomThreshold);
+    values.redrawPadding = get_config_int(kCrtDefaultsSection, "RedrawPadding", values.redrawPadding);
+    return values;
+  }
+
+  CrtDefaults currentCrtControls() const {
+    return {
+      crtEnabled()->isSelected(),
+      crtDoubleValue(crtStrength(), 100.0),
+      crtHorizontalBlurEnabled()->isSelected(),
+      crtDoubleValue(crtHorizontalBlurRadius(), 10.0),
+      crtScanlineEnabled()->isSelected(),
+      crtDoubleValue(crtScanlineStrength(), 100.0),
+      crtDoubleValue(crtScanlinePower(), 100.0),
+      crtBloomEnabled()->isSelected(),
+      crtDoubleValue(crtBloomStrength(), 100.0),
+      crtDoubleValue(crtBloomRadius(), 10.0),
+      crtDoubleValue(crtBloomThreshold(), 1.0),
+      crtRedrawPadding()->getValue()
+    };
+  }
+
+  void saveCrtDefaults(const CrtDefaults& values) {
+    set_config_bool(kCrtDefaultsSection, "Enabled", values.enabled);
+    set_config_double(kCrtDefaultsSection, "Strength", values.strength);
+    set_config_bool(kCrtDefaultsSection, "HorizontalBlurEnabled", values.blurEnabled);
+    set_config_double(kCrtDefaultsSection, "HorizontalBlurRadius", values.blurRadius);
+    set_config_bool(kCrtDefaultsSection, "ScanlineEnabled", values.scanlineEnabled);
+    set_config_double(kCrtDefaultsSection, "ScanlineOpacity", values.scanlineOpacity);
+    set_config_double(kCrtDefaultsSection, "ScanlineRange", values.scanlineRange);
+    set_config_bool(kCrtDefaultsSection, "BloomEnabled", values.bloomEnabled);
+    set_config_double(kCrtDefaultsSection, "BloomStrength", values.bloomStrength);
+    set_config_double(kCrtDefaultsSection, "BloomRadius", values.bloomRadius);
+    set_config_double(kCrtDefaultsSection, "BloomThreshold", values.bloomThreshold);
+    set_config_int(kCrtDefaultsSection, "RedrawPadding", values.redrawPadding);
+  }
+
+  void onCrtResetDefaults() {
+    setCrtControls(savedCrtDefaults());
+  }
+
+  void onCrtSaveDefaults() {
+    saveCrtDefaults(currentCrtControls());
   }
 
   void onChangeGridScope() {

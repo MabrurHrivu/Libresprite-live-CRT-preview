@@ -49,6 +49,7 @@ namespace app {
   class DocumentView;
   class EditorCustomizationDelegate;
   class PixelsMovement;
+  class PreviewShaderStack;
 
   namespace tools {
     class Ink;
@@ -222,6 +223,7 @@ namespace app {
     static ImageBufferPtr getRenderImageBuffer();
 
     AppRender& renderEngine() { return m_renderEngine; }
+    void setPreviewShaderStack(PreviewShaderStack* stack) { m_previewShaderStack = stack; }
 
     // IColorSource
     app::Color getColorByPosition(const gfx::Point& pos) override;
@@ -327,6 +329,9 @@ namespace app {
 
     // Animation speed multiplier.
     double m_aniSpeed;
+
+    // Optional post-process stack used by the floating preview editor.
+    PreviewShaderStack* m_previewShaderStack;
 
     static doc::ImageBufferPtr m_renderBuffer;
 

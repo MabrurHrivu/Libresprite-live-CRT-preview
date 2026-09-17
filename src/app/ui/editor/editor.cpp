@@ -39,6 +39,7 @@
 #include "app/ui/editor/play_state.h"
 #include "app/ui/editor/standby_state.h"
 #include "app/ui/main_window.h"
+#include "app/ui/preview_shader_stack.h"
 #include "app/ui/skin/skin_theme.h"
 #include "app/ui/status_bar.h"
 #include "app/ui/toolbar.h"
@@ -168,6 +169,7 @@ Editor::Editor(Document* document, EditorFlags flags)
   , m_flags(flags)
   , m_secondaryButton(false)
   , m_aniSpeed(1.0)
+  , m_previewShaderStack(nullptr)
 {
   // Add the first state into the history.
   m_statesHistory.push(m_state);
@@ -410,7 +412,14 @@ void Editor::updateEditor()
 void Editor::drawOneSpriteUnclippedRect(ui::Graphics* g, const gfx::Rect& spriteRectToDraw, int dx, int dy)
 {
   // Clip from sprite and apply zoom
-  gfx::Rect rc = m_sprite->bounds().createIntersection(spriteRectToDraw);
+  gfx::Rect spriteRect = spriteRectToDraw;
+  if (m_previewShaderStack) {
+    int padding = m_previewShaderStack->dirtyPixelPadding();
+    if (padding > 0)
+      spriteRect.enlarge(padding);
+  }
+
+  gfx::Rect rc = m_sprite->bounds().createIntersection(spriteRect);
   rc = m_zoom.apply(rc);
 
   int dest_x = dx + m_padding.x + rc.x;
@@ -438,6 +447,15 @@ void Editor::drawOneSpriteUnclippedRect(ui::Graphics* g, const gfx::Rect& sprite
   if (rc.isEmpty())
     return;
 
+  gfx::Rect renderRc = rc;
+  if (m_previewShaderStack) {
+    int margin = m_previewShaderStack->requiredMargin(m_zoom);
+    if (margin > 0) {
+      renderRc.enlarge(margin);
+      renderRc = renderRc.createIntersection(m_zoom.apply(m_sprite->bounds()));
+    }
+  }
+
   // Generate the rendered image
   if (!m_renderBuffer)
     m_renderBuffer.reset(new doc::ImageBuffer());
@@ -448,7 +466,7 @@ void Editor::drawOneSpriteUnclippedRect(ui::Graphics* g, const gfx::Rect& sprite
     // tool managers that need to validate this region (copy pixels from
     // the original cel) before it can be used by the RenderEngine.
     {
-      gfx::Rect expose = m_zoom.remove(rc);
+      gfx::Rect expose = m_zoom.remove(renderRc);
       // If the zoom level is less than 100%, we add extra pixels to
       // the exposed area. Those pixels could be shown in the
       // rendering process depending on each cel position.
@@ -467,7 +485,7 @@ void Editor::drawOneSpriteUnclippedRect(ui::Graphics* g, const gfx::Rect& sprite
     }
 
     // Create a temporary RGB bitmap to draw all to it
-    rendered.reset(Image::create(IMAGE_RGB, rc.w, rc.h, m_renderBuffer));
+    rendered.reset(Image::create(IMAGE_RGB, renderRc.w, renderRc.h, m_renderBuffer));
     m_renderEngine.setupBackground(m_document, rendered->pixelFormat());
     m_renderEngine.disableOnionskin();
 
@@ -507,7 +525,7 @@ void Editor::drawOneSpriteUnclippedRect(ui::Graphics* g, const gfx::Rect& sprite
     }
 
     m_renderEngine.renderSprite(rendered.get(), m_sprite, m_frame,
-      gfx::Clip(0, 0, rc), m_zoom);
+      gfx::Clip(0, 0, renderRc), m_zoom);
 
     m_renderEngine.removeExtraImage();
   }
@@ -519,24 +537,27 @@ void Editor::drawOneSpriteUnclippedRect(ui::Graphics* g, const gfx::Rect& sprite
     // Pre-render decorator.
     if ((m_flags & kShowDecorators) && m_decorator) {
       EditorPreRenderImpl preRender(this, rendered.get(),
-        Point(-rc.x, -rc.y), m_zoom);
+        Point(-renderRc.x, -renderRc.y), m_zoom);
       m_decorator->preRenderDecorator(&preRender);
     }
 
+    if (m_previewShaderStack)
+      m_previewShaderStack->apply(rendered.get(), renderRc.origin(), m_zoom);
+
     // Convert the render to a she::Surface
     static she::Surface* tmp;
-    if (!tmp || tmp->width() < rc.w || tmp->height() < rc.h) {
+    if (!tmp || tmp->width() < renderRc.w || tmp->height() < renderRc.h) {
       if (tmp)
         tmp->dispose();
 
-      tmp = she::instance()->createRgbaSurface(rc.w, rc.h);
+      tmp = she::instance()->createRgbaSurface(renderRc.w, renderRc.h);
     }
 
     if (tmp->nativeHandle()) {
       convert_image_to_surface(rendered.get(), m_sprite->palette(m_frame),
-        tmp, 0, 0, 0, 0, rc.w, rc.h);
+        tmp, 0, 0, 0, 0, renderRc.w, renderRc.h);
 
-      g->blit(tmp, 0, 0, dest_x, dest_y, rc.w, rc.h);
+      g->blit(tmp, rc.x-renderRc.x, rc.y-renderRc.y, dest_x, dest_y, rc.w, rc.h);
 
       m_brushPreview.invalidateRegion(
         gfx::Region(

@@ -116,6 +116,18 @@
     </section>
     <section id="preview" text="Preview">
       <option id="play_once" type="bool" default="false" />
+      <option id="crt_enabled" type="bool" default="true" />
+      <option id="crt_strength" type="double" default="1.0" />
+      <option id="crt_horizontal_blur_enabled" type="bool" default="true" />
+      <option id="crt_horizontal_blur_radius" type="double" default="1.0" />
+      <option id="crt_scanline_enabled" type="bool" default="true" />
+      <option id="crt_scanline_strength" type="double" default="0.50" />
+      <option id="crt_scanline_power" type="double" default="5.83" />
+      <option id="crt_bloom_enabled" type="bool" default="true" />
+      <option id="crt_bloom_strength" type="double" default="0.40" />
+      <option id="crt_bloom_radius" type="double" default="2.6" />
+      <option id="crt_bloom_threshold" type="double" default="27.0" />
+      <option id="crt_redraw_padding" type="int" default="1" />
     </section>
     <section id="theme" text="Theme">
       <option id="selected" type="std::string" default="&quot;default&quot;" migrate="Skin.Selected" />
