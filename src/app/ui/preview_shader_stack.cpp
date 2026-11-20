@@ -50,6 +50,47 @@ std::string to_lower(std::string value)
   return value;
 }
 
+std::vector<std::string> crt_layer_order(const std::string& value)
+{
+  const char* defaults[] = { "blur", "scanlines", "bloom", "rgb_cells" };
+  std::vector<std::string> result;
+  std::string token;
+
+  auto add = [&result](const std::string& name) {
+    std::string lower = to_lower(name);
+    if (lower == "rgb" || lower == "rgbcells")
+      lower = "rgb_cells";
+    if ((lower == "blur" || lower == "scanlines" ||
+         lower == "bloom" || lower == "rgb_cells") &&
+        std::find(result.begin(), result.end(), lower) == result.end())
+      result.push_back(lower);
+  };
+
+  for (char ch : value) {
+    if (ch == ',') {
+      add(token);
+      token.clear();
+    }
+    else if (!std::isspace(static_cast<unsigned char>(ch)))
+      token += ch;
+  }
+  add(token);
+  for (const char* name : defaults)
+    add(name);
+  return result;
+}
+
+std::string join_crt_layer_order(const std::vector<std::string>& order)
+{
+  std::string result;
+  for (const std::string& name : order) {
+    if (!result.empty())
+      result += ",";
+    result += name;
+  }
+  return result;
+}
+
 void put_rgb(doc::Image* image, int x, int y, int r, int g, int b)
 {
   image->putPixel(x, y, doc::rgba(
@@ -76,14 +117,21 @@ void apply_preferences_to_effect(PreviewShaderStack::Effect& effect)
   effect.enabled = preview.crtEnabled();
   effect.strength = clamp_strength(preview.crtStrength());
   effect.horizontalBlurEnabled = preview.crtHorizontalBlurEnabled();
-  effect.horizontalBlurRadius = clamp_param(preview.crtHorizontalBlurRadius(), 0.0, 32.0);
+  effect.horizontalBlurRadius = clamp_param(preview.crtHorizontalBlurRadius(), 0.0, 5.0);
   effect.scanlineEnabled = preview.crtScanlineEnabled();
   effect.scanlineStrength = clamp_param(preview.crtScanlineStrength(), 0.0, 1.0);
   effect.scanlinePower = clamp_param(preview.crtScanlinePower(), 0.1, 8.0);
+  effect.scanlineBrightnessCompensation = clamp_param(preview.crtScanlineBrightnessCompensation(), 0.0, 1.0);
   effect.bloomEnabled = preview.crtBloomEnabled();
   effect.bloomStrength = clamp_param(preview.crtBloomStrength(), 0.0, 1.5);
   effect.bloomRadius = clamp_param(preview.crtBloomRadius(), 0.0, 32.0);
   effect.bloomThreshold = clamp_param(preview.crtBloomThreshold(), 0.0, 255.0);
+  effect.rgbCellsEnabled = preview.crtRgbCellsEnabled();
+  effect.rgbCellsFadeStartZoom = clamp_param(preview.crtRgbCellsFadeStartZoom(), 1.0, 64.0);
+  effect.rgbCellsFadePerZoom = clamp_param(preview.crtRgbCellsFadePerZoom(), 0.0, 10.0);
+  effect.rgbCellsMinStrength = clamp_param(preview.crtRgbCellsMinStrength(), 0.0, 1.0);
+  effect.rgbCellsBrightnessCompensation = clamp_param(preview.crtRgbCellsBrightnessCompensation(), 0.0, 1.0);
+  effect.layerOrder = join_crt_layer_order(crt_layer_order(preview.crtLayerOrder()));
 }
 
 void save_effect_to_preferences(const PreviewShaderStack::Effect& effect)
@@ -92,19 +140,26 @@ void save_effect_to_preferences(const PreviewShaderStack::Effect& effect)
   preview.crtEnabled(effect.enabled);
   preview.crtStrength(clamp_strength(effect.strength));
   preview.crtHorizontalBlurEnabled(effect.horizontalBlurEnabled);
-  preview.crtHorizontalBlurRadius(clamp_param(effect.horizontalBlurRadius, 0.0, 32.0));
+  preview.crtHorizontalBlurRadius(clamp_param(effect.horizontalBlurRadius, 0.0, 5.0));
   preview.crtScanlineEnabled(effect.scanlineEnabled);
   preview.crtScanlineStrength(clamp_param(effect.scanlineStrength, 0.0, 1.0));
   preview.crtScanlinePower(clamp_param(effect.scanlinePower, 0.1, 8.0));
+  preview.crtScanlineBrightnessCompensation(clamp_param(effect.scanlineBrightnessCompensation, 0.0, 1.0));
   preview.crtBloomEnabled(effect.bloomEnabled);
   preview.crtBloomStrength(clamp_param(effect.bloomStrength, 0.0, 1.5));
   preview.crtBloomRadius(clamp_param(effect.bloomRadius, 0.0, 32.0));
   preview.crtBloomThreshold(clamp_param(effect.bloomThreshold, 0.0, 255.0));
+  preview.crtRgbCellsEnabled(effect.rgbCellsEnabled);
+  preview.crtRgbCellsFadeStartZoom(clamp_param(effect.rgbCellsFadeStartZoom, 1.0, 64.0));
+  preview.crtRgbCellsFadePerZoom(clamp_param(effect.rgbCellsFadePerZoom, 0.0, 10.0));
+  preview.crtRgbCellsMinStrength(clamp_param(effect.rgbCellsMinStrength, 0.0, 1.0));
+  preview.crtRgbCellsBrightnessCompensation(clamp_param(effect.rgbCellsBrightnessCompensation, 0.0, 1.0));
+  preview.crtLayerOrder(effect.layerOrder);
 }
 
 void apply_horizontal_blur(doc::Image* image, double radius)
 {
-  radius = clamp_param(radius, 0.0, 256.0);
+  radius = clamp_param(radius, 0.0, 5.0);
   if (radius < 0.5)
     return;
 
@@ -112,30 +167,37 @@ void apply_horizontal_blur(doc::Image* image, double radius)
   const int h = image->height();
   const int r = int(std::ceil(radius));
   std::unique_ptr<doc::Image> src(doc::Image::createCopy(image));
-  std::vector<double> prefixR(w+1);
-  std::vector<double> prefixG(w+1);
-  std::vector<double> prefixB(w+1);
+  std::vector<double> prefixWeight(w+1);
+  std::vector<double> prefixWR(w+1);
+  std::vector<double> prefixWG(w+1);
+  std::vector<double> prefixWB(w+1);
+  constexpr double kBrightBias = 0.20;
 
   for (int y=0; y<h; ++y) {
-    prefixR[0] = 0.0;
-    prefixG[0] = 0.0;
-    prefixB[0] = 0.0;
+    prefixWeight[0] = 0.0;
+    prefixWR[0] = 0.0;
+    prefixWG[0] = 0.0;
+    prefixWB[0] = 0.0;
     for (int x=0; x<w; ++x) {
       uint32_t c = src->getPixel(x, y);
-      prefixR[x+1] = prefixR[x] + doc::rgba_getr(c);
-      prefixG[x+1] = prefixG[x] + doc::rgba_getg(c);
-      prefixB[x+1] = prefixB[x] + doc::rgba_getb(c);
+      double luma = double(doc::rgb_luma(
+        doc::rgba_getr(c), doc::rgba_getg(c), doc::rgba_getb(c))) / 255.0;
+      double weight = 1.0 + kBrightBias * luma;
+      prefixWeight[x+1] = prefixWeight[x] + weight;
+      prefixWR[x+1] = prefixWR[x] + doc::rgba_getr(c) * weight;
+      prefixWG[x+1] = prefixWG[x] + doc::rgba_getg(c) * weight;
+      prefixWB[x+1] = prefixWB[x] + doc::rgba_getb(c) * weight;
     }
 
     for (int x=0; x<w; ++x) {
       int x0 = std::max(0, x-r);
       int x1 = std::min(w-1, x+r);
-      double count = double(x1 - x0 + 1);
+      double weight = prefixWeight[x1+1] - prefixWeight[x0];
 
       put_rgb(image, x, y,
-        int((prefixR[x1+1] - prefixR[x0]) / count),
-        int((prefixG[x1+1] - prefixG[x0]) / count),
-        int((prefixB[x1+1] - prefixB[x0]) / count));
+        int((prefixWR[x1+1] - prefixWR[x0]) / weight),
+        int((prefixWG[x1+1] - prefixWG[x0]) / weight),
+        int((prefixWB[x1+1] - prefixWB[x0]) / weight));
     }
   }
 }
@@ -168,10 +230,28 @@ void apply_row_taper(
   const gfx::Point& zoomedSpriteOrigin,
   const render::Zoom& zoom,
   double strength,
-  double power)
+  double power,
+  double brightnessCompensation)
 {
   const int w = image->width();
   const int h = image->height();
+  const double compensation = clamp_param(brightnessCompensation, 0.0, 1.0);
+  const double boost = 1.0 + compensation * clamp_param(strength, 0.0, 1.0);
+
+  // Compensation belongs underneath the scanline mask.  Brighten the input
+  // first, then apply the normal scanline taper so the taper itself is not
+  // weakened by the compensation control.
+  if (boost > 1.0) {
+    for (int y=0; y<h; ++y) {
+      for (int x=0; x<w; ++x) {
+        uint32_t c = image->getPixel(x, y);
+        put_rgb(image, x, y,
+          int(doc::rgba_getr(c) * boost),
+          int(doc::rgba_getg(c) * boost),
+          int(doc::rgba_getb(c) * boost));
+      }
+    }
+  }
 
   for (int y=0; y<h; ++y) {
     double row = pixel_row_taper_amount(
@@ -275,27 +355,131 @@ void apply_bloom(doc::Image* image, double radius, double strength, double thres
   }
 }
 
+void apply_rgb_cells(
+  doc::Image* image,
+  const gfx::Point& zoomedSpriteOrigin,
+  const render::Zoom& zoom,
+  double strength,
+  double fadeStartZoom,
+  double fadePerZoom,
+  double minStrength,
+  double brightnessCompensation)
+{
+  const int w = image->width();
+  const int h = image->height();
+  const double scale = zoom.scale();
+  strength = clamp_strength(strength);
+  fadeStartZoom = clamp_param(fadeStartZoom, 1.0, 64.0);
+  fadePerZoom = clamp_param(fadePerZoom, 0.0, 10.0);
+  minStrength = clamp_param(minStrength, 0.0, 1.0);
+  const double zoomLoss = std::max(0.0, fadeStartZoom - scale) * fadePerZoom / 100.0;
+  // The minimum is a floor only while the fade is still above zero.  With a
+  // minimum of 0, the cells must really disappear once the configured fade
+  // has consumed all of their strength; using max(0, ...) here also avoids
+  // leaving a residual darkening pass at small zoom levels.
+  const double fadedStrength = std::max(0.0, 1.0 - zoomLoss);
+  const double cellStrength = strength * std::max(minStrength, fadedStrength);
+  if (cellStrength <= 0.0)
+    return;
+
+  const double compensation = clamp_param(brightnessCompensation, 0.0, 1.0);
+  const double boost = 1.0 + compensation * cellStrength;
+  if (boost > 1.0) {
+    for (int y=0; y<h; ++y) {
+      for (int x=0; x<w; ++x) {
+        uint32_t c = image->getPixel(x, y);
+        put_rgb(image, x, y,
+          int(doc::rgba_getr(c) * boost),
+          int(doc::rgba_getg(c) * boost),
+          int(doc::rgba_getb(c) * boost));
+      }
+    }
+  }
+
+  for (int y=0; y<h; ++y) {
+    for (int x=0; x<w; ++x) {
+      const double screenX = double(zoomedSpriteOrigin.x + x);
+      double cellOrigin;
+      double cellPitch;
+
+      if (scale >= 3.0) {
+        // At useful magnifications, align the phosphor triad to each
+        // displayed source pixel. Fractional coverage avoids the uneven
+        // 1/1/0 assignment produced by integer division.
+        const int spriteX = zoom.remove(int(screenX));
+        cellOrigin = zoom.apply(spriteX);
+        cellPitch = scale / 3.0;
+      }
+      else {
+        // Below 3x, a source pixel cannot contain three distinct output
+        // pixels. Keep the physical triad screen-space aligned instead of
+        // disabling it or forcing an unstable per-source-pixel mask.
+        // Use the absolute preview coordinate so partial dirty redraws do
+        // not shift the triad when renderRc starts at a different x.
+        cellOrigin = 0.0;
+        cellPitch = 1.0;
+      }
+
+      double channelCoverage[3] = { 0.0, 0.0, 0.0 };
+      constexpr int kSamples = 4;
+      for (int sample=0; sample<kSamples; ++sample) {
+        double sampleX = screenX + (double(sample) + 0.5) / kSamples;
+        double phase = std::fmod(sampleX - cellOrigin, 3.0 * cellPitch);
+        if (phase < 0.0)
+          phase += 3.0 * cellPitch;
+        int subpixel = std::min(2, int(phase / cellPitch));
+        channelCoverage[subpixel] += 1.0 / kSamples;
+      }
+
+      const double channel[3] = {
+        1.0 - cellStrength * (1.0 - channelCoverage[0]),
+        1.0 - cellStrength * (1.0 - channelCoverage[1]),
+        1.0 - cellStrength * (1.0 - channelCoverage[2])
+      };
+      uint32_t c = image->getPixel(x, y);
+      put_rgb(image, x, y,
+        int(doc::rgba_getr(c) * channel[0]),
+        int(doc::rgba_getg(c) * channel[1]),
+        int(doc::rgba_getb(c) * channel[2]));
+    }
+  }
+
+}
+
 void apply_crt(
   doc::Image* image,
   const gfx::Point& zoomedSpriteOrigin,
   const render::Zoom& zoom,
   const PreviewShaderStack::Effect& effect)
 {
-  if (effect.horizontalBlurEnabled)
-    apply_horizontal_blur(image, screen_radius(effect.horizontalBlurRadius, zoom));
-  if (effect.scanlineEnabled)
-    apply_row_taper(
-      image,
-      zoomedSpriteOrigin,
-      zoom,
-      effect.scanlineStrength * clamp_strength(effect.strength),
-      effect.scanlinePower);
-  if (effect.bloomEnabled)
-    apply_bloom(
-      image,
-      screen_radius(effect.bloomRadius, zoom),
-      effect.bloomStrength * clamp_strength(effect.strength),
-      effect.bloomThreshold);
+  for (const std::string& layer : crt_layer_order(effect.layerOrder)) {
+    if (layer == "blur" && effect.horizontalBlurEnabled)
+      apply_horizontal_blur(image, screen_radius(effect.horizontalBlurRadius, zoom));
+    else if (layer == "scanlines" && effect.scanlineEnabled)
+      apply_row_taper(
+        image,
+        zoomedSpriteOrigin,
+        zoom,
+        effect.scanlineStrength * clamp_strength(effect.strength),
+        effect.scanlinePower,
+        effect.scanlineBrightnessCompensation);
+    else if (layer == "bloom" && effect.bloomEnabled)
+      apply_bloom(
+        image,
+        screen_radius(effect.bloomRadius, zoom),
+        effect.bloomStrength * clamp_strength(effect.strength),
+        effect.bloomThreshold);
+    else if (layer == "rgb_cells" && effect.rgbCellsEnabled)
+      apply_rgb_cells(
+        image,
+        zoomedSpriteOrigin,
+        zoom,
+        clamp_strength(effect.strength),
+        effect.rgbCellsFadeStartZoom,
+        effect.rgbCellsFadePerZoom,
+        effect.rgbCellsMinStrength,
+        effect.rgbCellsBrightnessCompensation);
+  }
 }
 
 } // anonymous namespace
@@ -318,9 +502,16 @@ PreviewShaderStack::Effect PreviewShaderStack::preset(EffectType type)
   effect.horizontalBlurRadius = 1.0;
   effect.scanlineStrength = 0.50;
   effect.scanlinePower = 5.83;
+  effect.scanlineBrightnessCompensation = 0.0;
   effect.bloomStrength = 0.40;
   effect.bloomRadius = 2.6;
   effect.bloomThreshold = 27.0;
+  effect.rgbCellsEnabled = true;
+  effect.rgbCellsFadeStartZoom = 24.0;
+  effect.rgbCellsFadePerZoom = 5.0;
+  effect.rgbCellsMinStrength = 0.10;
+  effect.rgbCellsBrightnessCompensation = 0.0;
+  effect.layerOrder = "blur,scanlines,bloom,rgb_cells";
   return effect;
 }
 
@@ -414,6 +605,8 @@ void PreviewShaderStack::setCrtLayerEnabled(const std::string& layer, bool enabl
     effect.scanlineEnabled = enabled;
   else if (lower == "bloom")
     effect.bloomEnabled = enabled;
+  else if (lower == "rgb_cells" || lower == "rgb")
+    effect.rgbCellsEnabled = enabled;
 }
 
 void PreviewShaderStack::setCrtParameter(const std::string& key, double value)
@@ -423,17 +616,27 @@ void PreviewShaderStack::setCrtParameter(const std::string& key, double value)
   if (lower == "strength")
     effect.strength = clamp_strength(value);
   else if (lower == "horizontal_blur_radius")
-    effect.horizontalBlurRadius = clamp_param(value, 0.0, 32.0);
+    effect.horizontalBlurRadius = clamp_param(value, 0.0, 5.0);
   else if (lower == "scanline_strength")
     effect.scanlineStrength = clamp_param(value, 0.0, 1.0);
   else if (lower == "scanline_power")
     effect.scanlinePower = clamp_param(value, 0.1, 8.0);
+  else if (lower == "scanline_brightness_compensation")
+    effect.scanlineBrightnessCompensation = clamp_param(value, 0.0, 1.0);
   else if (lower == "bloom_strength")
     effect.bloomStrength = clamp_param(value, 0.0, 1.5);
   else if (lower == "bloom_radius")
     effect.bloomRadius = clamp_param(value, 0.0, 32.0);
   else if (lower == "bloom_threshold")
     effect.bloomThreshold = clamp_param(value, 0.0, 255.0);
+  else if (lower == "rgb_cells_fade_start_zoom")
+    effect.rgbCellsFadeStartZoom = clamp_param(value, 1.0, 64.0);
+  else if (lower == "rgb_cells_fade_per_zoom")
+    effect.rgbCellsFadePerZoom = clamp_param(value, 0.0, 10.0);
+  else if (lower == "rgb_cells_min_strength")
+    effect.rgbCellsMinStrength = clamp_param(value, 0.0, 1.0);
+  else if (lower == "rgb_cells_brightness_compensation")
+    effect.rgbCellsBrightnessCompensation = clamp_param(value, 0.0, 1.0);
 }
 
 int PreviewShaderStack::requiredMargin(const render::Zoom& zoom) const

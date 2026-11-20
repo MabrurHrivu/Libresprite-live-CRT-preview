@@ -123,10 +123,17 @@
       <option id="crt_scanline_enabled" type="bool" default="true" />
       <option id="crt_scanline_strength" type="double" default="0.50" />
       <option id="crt_scanline_power" type="double" default="5.83" />
+      <option id="crt_scanline_brightness_compensation" type="double" default="0.0" />
       <option id="crt_bloom_enabled" type="bool" default="true" />
       <option id="crt_bloom_strength" type="double" default="0.40" />
       <option id="crt_bloom_radius" type="double" default="2.6" />
       <option id="crt_bloom_threshold" type="double" default="27.0" />
+      <option id="crt_rgb_cells_enabled" type="bool" default="true" />
+      <option id="crt_rgb_cells_fade_start_zoom" type="double" default="24.0" />
+      <option id="crt_rgb_cells_fade_per_zoom" type="double" default="5.0" />
+      <option id="crt_rgb_cells_min_strength" type="double" default="0.10" />
+      <option id="crt_rgb_cells_brightness_compensation" type="double" default="0.0" />
+      <option id="crt_layer_order" type="std::string" default="&quot;blur,scanlines,bloom,rgb_cells&quot;" />
       <option id="crt_redraw_padding" type="int" default="1" />
     </section>
     <section id="theme" text="Theme">

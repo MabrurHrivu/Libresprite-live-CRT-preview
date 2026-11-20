@@ -188,13 +188,19 @@ public:
       SkinTheme::instance()->parts.windowPlayButtonNormal(),
       SkinTheme::instance()->parts.windowPlayButtonHot(),
       SkinTheme::instance()->parts.windowPlayButtonSelected())
+    , m_crtEnabled(true)
   {
     setDecorative(true);
+    // This is a mouse-only title-bar control.  It must not become the
+    // keyboard focus target, otherwise normal editor shortcuts can be routed
+    // through the button widget.
+    setFocusStop(false);
   }
 
   base::Signal0<void> Toggle;
 
   void setCrtEnabled(bool enabled) {
+    m_crtEnabled = enabled;
     setSelected(enabled);
   }
 
@@ -208,33 +214,64 @@ protected:
   {
     switch (msg->type()) {
 
+      case kKeyDownMessage:
+      case kKeyUpMessage:
+        // Never consume keyboard input here.  This widget is not part of the
+        // editor's keyboard command path.
+        return false;
+
       case kSetCursorMessage:
         ui::set_mouse_cursor(kArrowCursor);
+        return true;
+
+      case kFocusEnterMessage:
+      case kFocusLeaveMessage:
+        setSelected(m_crtEnabled);
+        return true;
+
+      case kMouseDownMessage:
+        if (isEnabled()) {
+          setSelected(true);
+          captureMouse();
+          releaseFocus();
+        }
         return true;
 
       case kMouseUpMessage:
         if (hasCapture()) {
           releaseMouse();
-          Toggle();
+          if (hasMouseOver())
+            Toggle();
+          setSelected(m_crtEnabled);
           return true;
         }
-        break;
+        return true;
     }
 
     return SkinButton<Button>::onProcessMessage(msg);
   }
 
   void onPaint(PaintEvent& ev) override {
-    SkinButton<Button>::onPaint(ev);
+    setSelected(m_crtEnabled);
 
     SkinTheme* theme = SkinTheme::instance();
     Graphics* g = ev.graphics();
+    gfx::Rect rc = clientBounds();
+    SkinPartPtr part = m_crtEnabled ?
+      theme->parts.windowPlayButtonSelected():
+      (hasMouseOver() ? theme->parts.windowPlayButtonHot():
+                        theme->parts.windowPlayButtonNormal());
+    gfx::Size partSize = part->size();
+    g->drawRgbaSurface(
+      part->bitmap(0),
+      rc.x + (rc.w - partSize.w) / 2,
+      rc.y + (rc.h - partSize.h) / 2);
+
     auto oldFont = g->font();
     if (theme->getMiniFont())
       g->setFont(theme->getMiniFont());
 
     gfx::Size textSize = g->measureUIString("CRT");
-    gfx::Rect rc = clientBounds();
     int x = rc.x + (rc.w - textSize.w) / 2;
     int y = rc.y + (rc.h - textSize.h) / 2 + 2*guiscale();
     g->drawUIString(
@@ -253,7 +290,10 @@ protected:
     gfx::Size iconSize = theme->parts.windowPlayButtonNormal()->size();
     gfx::Size closeSize = theme->parts.windowCloseButtonNormal()->size();
 
-    rect.w = iconSize.w + 10*guiscale();
+    // The CRT label is wider than the skin's play-button bitmap.  Give the
+    // control a real text-sized hit area instead of clipping the label to an
+    // icon-width rectangle.
+    rect.w = 3*iconSize.w;
     rect.h = iconSize.h;
 
     rect.offset(window->bounds().x2() - 3*guiscale()
@@ -264,6 +304,7 @@ protected:
 
     setBounds(rect);
   }
+  bool m_crtEnabled;
 };
 
 PreviewEditorWindow::PreviewEditorWindow()

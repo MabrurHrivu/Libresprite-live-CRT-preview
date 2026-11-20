@@ -44,9 +44,16 @@ namespace app {
       double horizontalBlurRadius;
       double scanlineStrength;
       double scanlinePower;
+      double scanlineBrightnessCompensation;
       double bloomStrength;
       double bloomRadius;
       double bloomThreshold;
+      bool rgbCellsEnabled;
+      double rgbCellsFadeStartZoom;
+      double rgbCellsFadePerZoom;
+      double rgbCellsMinStrength;
+      double rgbCellsBrightnessCompensation;
+      std::string layerOrder;
     };
 
     PreviewShaderStack();

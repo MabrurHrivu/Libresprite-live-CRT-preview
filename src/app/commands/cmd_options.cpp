@@ -34,7 +34,11 @@
 
 #include "options.xml.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <string>
+#include <vector>
 
 namespace app {
 
@@ -49,12 +53,52 @@ struct CrtDefaults {
   bool scanlineEnabled = true;
   double scanlineOpacity = 0.50;
   double scanlineRange = 5.83;
+  double scanlineBrightnessCompensation = 0.0;
   bool bloomEnabled = true;
   double bloomStrength = 0.40;
   double bloomRadius = 2.6;
   double bloomThreshold = 27.0;
+  bool rgbCellsEnabled = true;
+  double rgbCellsFadeStartZoom = 24.0;
+  double rgbCellsFadePerZoom = 5.0;
+  double rgbCellsMinStrength = 0.10;
+  double rgbCellsBrightnessCompensation = 0.0;
+  std::string layerOrder = "blur,scanlines,bloom,rgb_cells";
   int redrawPadding = 1;
 };
+
+static std::vector<std::string> crtLayerOrder(const std::string& value) {
+  const char* defaults[] = { "blur", "scanlines", "bloom", "rgb_cells" };
+  std::vector<std::string> result;
+  std::string token;
+  auto add = [&result](const std::string& name) {
+    if ((name == "blur" || name == "scanlines" || name == "bloom" || name == "rgb_cells") &&
+        std::find(result.begin(), result.end(), name) == result.end())
+      result.push_back(name);
+  };
+  for (char ch : value) {
+    if (ch == ',') {
+      add(token);
+      token.clear();
+    }
+    else if (!std::isspace(static_cast<unsigned char>(ch)))
+      token += ch;
+  }
+  add(token);
+  for (const char* name : defaults)
+    add(name);
+  return result;
+}
+
+static std::string joinCrtLayerOrderString(const std::vector<std::string>& order) {
+  std::string result;
+  for (const std::string& name : order) {
+    if (!result.empty())
+      result += ",";
+    result += name;
+  }
+  return result;
+}
 
 using namespace ui;
 
@@ -251,6 +295,18 @@ public:
     undoAllowNonlinearHistory()->setSelected(m_pref.undo.allowNonlinearHistory());
 
     setupCrtControls();
+    crtBlurUp()->Click.connect([this]{ moveCrtLayer("blur", -1); });
+    crtBlurDown()->Click.connect([this]{ moveCrtLayer("blur", 1); });
+    crtScanlinesUp()->Click.connect([this]{ moveCrtLayer("scanlines", -1); });
+    crtScanlinesDown()->Click.connect([this]{ moveCrtLayer("scanlines", 1); });
+    crtBloomUp()->Click.connect([this]{ moveCrtLayer("bloom", -1); });
+    crtBloomDown()->Click.connect([this]{ moveCrtLayer("bloom", 1); });
+    crtRgbUp()->Click.connect([this]{ moveCrtLayer("rgb_cells", -1); });
+    crtRgbDown()->Click.connect([this]{ moveCrtLayer("rgb_cells", 1); });
+    crtBlurCollapse()->Click.connect([this]{ toggleCrtBody(crtBlurBody(), crtBlurCollapse()); });
+    crtScanlinesCollapse()->Click.connect([this]{ toggleCrtBody(crtScanlineBody(), crtScanlinesCollapse()); });
+    crtBloomCollapse()->Click.connect([this]{ toggleCrtBody(crtBloomBody(), crtBloomCollapse()); });
+    crtRgbCollapse()->Click.connect([this]{ toggleCrtBody(crtRgbCellsBody(), crtRgbCollapse()); });
     crtResetDefaults()->Click.connect(base::Bind<void>(&OptionsWindow::onCrtResetDefaults, this));
     crtSaveDefaults()->Click.connect(base::Bind<void>(&OptionsWindow::onCrtSaveDefaults, this));
 
@@ -342,14 +398,22 @@ public:
     m_pref.preview.crtEnabled(crtEnabled()->isSelected());
     m_pref.preview.crtStrength(crtDoubleValue(crtStrength(), 100.0));
     m_pref.preview.crtHorizontalBlurEnabled(crtHorizontalBlurEnabled()->isSelected());
-    m_pref.preview.crtHorizontalBlurRadius(crtDoubleValue(crtHorizontalBlurRadius(), 10.0));
+    m_pref.preview.crtHorizontalBlurRadius(
+      crtDoubleValue(crtHorizontalBlurRadius(), 1.0) / 20.0);
     m_pref.preview.crtScanlineEnabled(crtScanlineEnabled()->isSelected());
     m_pref.preview.crtScanlineStrength(crtDoubleValue(crtScanlineStrength(), 100.0));
     m_pref.preview.crtScanlinePower(crtDoubleValue(crtScanlinePower(), 100.0));
+    m_pref.preview.crtScanlineBrightnessCompensation(crtDoubleValue(crtScanlineBrightnessCompensation(), 100.0));
     m_pref.preview.crtBloomEnabled(crtBloomEnabled()->isSelected());
     m_pref.preview.crtBloomStrength(crtDoubleValue(crtBloomStrength(), 100.0));
     m_pref.preview.crtBloomRadius(crtDoubleValue(crtBloomRadius(), 10.0));
     m_pref.preview.crtBloomThreshold(crtDoubleValue(crtBloomThreshold(), 1.0));
+    m_pref.preview.crtRgbCellsEnabled(crtRgbCellsEnabled()->isSelected());
+    m_pref.preview.crtRgbCellsFadeStartZoom(65.0 - crtDoubleValue(crtRgbCellsFadeStartZoom(), 1.0));
+    m_pref.preview.crtRgbCellsFadePerZoom(crtDoubleValue(crtRgbCellsFadePerZoom(), 10.0));
+    m_pref.preview.crtRgbCellsMinStrength(crtDoubleValue(crtRgbCellsMinStrength(), 100.0));
+    m_pref.preview.crtRgbCellsBrightnessCompensation(crtDoubleValue(crtRgbCellsBrightnessCompensation(), 100.0));
+    m_pref.preview.crtLayerOrder(joinCrtLayerOrder());
     m_pref.preview.crtRedrawPadding(crtRedrawPadding()->getValue());
 
     // Experimental features
@@ -430,20 +494,82 @@ private:
     entry->setTextf("%.3g", crtDoubleValue(slider, scale));
   }
 
+  static void setCrtReversedZoom(Slider* slider, Entry* entry, double value) {
+    int actual = MID(1, int(std::round(value)), 64);
+    int displayed = 65 - actual;
+    slider->setValue(displayed);
+    entry->setTextf("%d", displayed);
+  }
+
   void setCrtControls(const CrtDefaults& values) {
+    setCrtLayerOrder(values.layerOrder);
     crtEnabled()->setSelected(values.enabled);
     crtHorizontalBlurEnabled()->setSelected(values.blurEnabled);
     crtScanlineEnabled()->setSelected(values.scanlineEnabled);
     crtBloomEnabled()->setSelected(values.bloomEnabled);
+    crtRgbCellsEnabled()->setSelected(values.rgbCellsEnabled);
 
     setCrtNumber(crtStrength(), crtStrengthEntry(), values.strength, 100.0);
-    setCrtNumber(crtHorizontalBlurRadius(), crtHorizontalBlurRadiusEntry(), values.blurRadius, 10.0);
+    setCrtNumber(crtHorizontalBlurRadius(), crtHorizontalBlurRadiusEntry(),
+                 values.blurRadius * 20.0, 1.0);
     setCrtNumber(crtScanlineStrength(), crtScanlineStrengthEntry(), values.scanlineOpacity, 100.0);
     setCrtNumber(crtScanlinePower(), crtScanlinePowerEntry(), values.scanlineRange, 100.0);
+    setCrtNumber(crtScanlineBrightnessCompensation(), crtScanlineBrightnessCompensationEntry(), values.scanlineBrightnessCompensation, 100.0);
     setCrtNumber(crtBloomStrength(), crtBloomStrengthEntry(), values.bloomStrength, 100.0);
     setCrtNumber(crtBloomRadius(), crtBloomRadiusEntry(), values.bloomRadius, 10.0);
     setCrtNumber(crtBloomThreshold(), crtBloomThresholdEntry(), values.bloomThreshold, 1.0);
+    setCrtReversedZoom(crtRgbCellsFadeStartZoom(), crtRgbCellsFadeStartZoomEntry(), values.rgbCellsFadeStartZoom);
+    setCrtNumber(crtRgbCellsFadePerZoom(), crtRgbCellsFadePerZoomEntry(), values.rgbCellsFadePerZoom, 10.0);
+    setCrtNumber(crtRgbCellsMinStrength(), crtRgbCellsMinStrengthEntry(), values.rgbCellsMinStrength, 100.0);
+    setCrtNumber(crtRgbCellsBrightnessCompensation(), crtRgbCellsBrightnessCompensationEntry(), values.rgbCellsBrightnessCompensation, 100.0);
     setCrtNumber(crtRedrawPadding(), crtRedrawPaddingEntry(), values.redrawPadding, 1.0);
+  }
+
+  void setCrtLayerOrder(const std::string& order) {
+    m_crtLayerOrder = crtLayerOrder(order);
+    reorderCrtLayerSections();
+  }
+
+  std::string joinCrtLayerOrder() const {
+    return joinCrtLayerOrderString(m_crtLayerOrder);
+  }
+
+  void reorderCrtLayerSections() {
+    crtLayerSections()->removeChild(crtBlurSection());
+    crtLayerSections()->removeChild(crtScanlineSection());
+    crtLayerSections()->removeChild(crtBloomSection());
+    crtLayerSections()->removeChild(crtRgbCellsSection());
+    for (int i=0; i<int(m_crtLayerOrder.size()); ++i) {
+      const std::string& layer = m_crtLayerOrder[i];
+      if (layer == "blur")
+        crtLayerSections()->insertChild(i, crtBlurSection());
+      else if (layer == "scanlines")
+        crtLayerSections()->insertChild(i, crtScanlineSection());
+      else if (layer == "bloom")
+        crtLayerSections()->insertChild(i, crtBloomSection());
+      else if (layer == "rgb_cells")
+        crtLayerSections()->insertChild(i, crtRgbCellsSection());
+    }
+    layout();
+  }
+
+  void moveCrtLayer(const std::string& layer, int delta) {
+    auto it = std::find(m_crtLayerOrder.begin(), m_crtLayerOrder.end(), layer);
+    if (it == m_crtLayerOrder.end())
+      return;
+    int index = int(it - m_crtLayerOrder.begin());
+    int newIndex = index + delta;
+    if (newIndex < 0 || newIndex >= int(m_crtLayerOrder.size()))
+      return;
+    std::swap(m_crtLayerOrder[index], m_crtLayerOrder[newIndex]);
+    reorderCrtLayerSections();
+  }
+
+  void toggleCrtBody(Widget* body, Button* button) {
+    bool visible = !body->isVisible();
+    body->setVisible(visible);
+    button->setText(visible ? "-": "+");
+    layout();
   }
 
   void bindCrtNumber(Slider* slider, Entry* entry, double scale) {
@@ -460,6 +586,17 @@ private:
     });
   }
 
+  void bindCrtReversedZoom(Slider* slider, Entry* entry) {
+    slider->Change.connect([slider, entry] {
+      entry->setTextf("%d", slider->getValue());
+    });
+    entry->Change.connect([slider, entry] {
+      int displayed = MID(slider->getMinValue(), entry->textInt(), slider->getMaxValue());
+      slider->setValue(displayed);
+      entry->setTextf("%d", displayed);
+    });
+  }
+
   void setupCrtControls() {
     auto& preview = m_pref.preview;
 
@@ -471,20 +608,32 @@ private:
       preview.crtScanlineEnabled(),
       preview.crtScanlineStrength(),
       preview.crtScanlinePower(),
+      preview.crtScanlineBrightnessCompensation(),
       preview.crtBloomEnabled(),
       preview.crtBloomStrength(),
       preview.crtBloomRadius(),
       preview.crtBloomThreshold(),
+      preview.crtRgbCellsEnabled(),
+      preview.crtRgbCellsFadeStartZoom(),
+      preview.crtRgbCellsFadePerZoom(),
+      preview.crtRgbCellsMinStrength(),
+      preview.crtRgbCellsBrightnessCompensation(),
+      preview.crtLayerOrder(),
       preview.crtRedrawPadding()
     });
 
     bindCrtNumber(crtStrength(), crtStrengthEntry(), 100.0);
-    bindCrtNumber(crtHorizontalBlurRadius(), crtHorizontalBlurRadiusEntry(), 10.0);
+    bindCrtNumber(crtHorizontalBlurRadius(), crtHorizontalBlurRadiusEntry(), 1.0);
     bindCrtNumber(crtScanlineStrength(), crtScanlineStrengthEntry(), 100.0);
     bindCrtNumber(crtScanlinePower(), crtScanlinePowerEntry(), 100.0);
+    bindCrtNumber(crtScanlineBrightnessCompensation(), crtScanlineBrightnessCompensationEntry(), 100.0);
     bindCrtNumber(crtBloomStrength(), crtBloomStrengthEntry(), 100.0);
     bindCrtNumber(crtBloomRadius(), crtBloomRadiusEntry(), 10.0);
     bindCrtNumber(crtBloomThreshold(), crtBloomThresholdEntry(), 1.0);
+    bindCrtReversedZoom(crtRgbCellsFadeStartZoom(), crtRgbCellsFadeStartZoomEntry());
+    bindCrtNumber(crtRgbCellsFadePerZoom(), crtRgbCellsFadePerZoomEntry(), 10.0);
+    bindCrtNumber(crtRgbCellsMinStrength(), crtRgbCellsMinStrengthEntry(), 100.0);
+    bindCrtNumber(crtRgbCellsBrightnessCompensation(), crtRgbCellsBrightnessCompensationEntry(), 100.0);
     bindCrtNumber(crtRedrawPadding(), crtRedrawPaddingEntry(), 1.0);
   }
 
@@ -497,10 +646,17 @@ private:
     values.scanlineEnabled = get_config_bool(kCrtDefaultsSection, "ScanlineEnabled", values.scanlineEnabled);
     values.scanlineOpacity = get_config_double(kCrtDefaultsSection, "ScanlineOpacity", values.scanlineOpacity);
     values.scanlineRange = get_config_double(kCrtDefaultsSection, "ScanlineRange", values.scanlineRange);
+    values.scanlineBrightnessCompensation = get_config_double(kCrtDefaultsSection, "ScanlineBrightnessCompensation", values.scanlineBrightnessCompensation);
     values.bloomEnabled = get_config_bool(kCrtDefaultsSection, "BloomEnabled", values.bloomEnabled);
     values.bloomStrength = get_config_double(kCrtDefaultsSection, "BloomStrength", values.bloomStrength);
     values.bloomRadius = get_config_double(kCrtDefaultsSection, "BloomRadius", values.bloomRadius);
     values.bloomThreshold = get_config_double(kCrtDefaultsSection, "BloomThreshold", values.bloomThreshold);
+    values.rgbCellsEnabled = get_config_bool(kCrtDefaultsSection, "RgbCellsEnabled", values.rgbCellsEnabled);
+    values.rgbCellsFadeStartZoom = get_config_double(kCrtDefaultsSection, "RgbCellsFadeStartZoom", values.rgbCellsFadeStartZoom);
+    values.rgbCellsFadePerZoom = get_config_double(kCrtDefaultsSection, "RgbCellsFadePerZoom", values.rgbCellsFadePerZoom);
+    values.rgbCellsMinStrength = get_config_double(kCrtDefaultsSection, "RgbCellsMinStrength", values.rgbCellsMinStrength);
+    values.rgbCellsBrightnessCompensation = get_config_double(kCrtDefaultsSection, "RgbCellsBrightnessCompensation", values.rgbCellsBrightnessCompensation);
+    values.layerOrder = get_config_string(kCrtDefaultsSection, "LayerOrder", values.layerOrder.c_str());
     values.redrawPadding = get_config_int(kCrtDefaultsSection, "RedrawPadding", values.redrawPadding);
     return values;
   }
@@ -510,14 +666,21 @@ private:
       crtEnabled()->isSelected(),
       crtDoubleValue(crtStrength(), 100.0),
       crtHorizontalBlurEnabled()->isSelected(),
-      crtDoubleValue(crtHorizontalBlurRadius(), 10.0),
+      crtDoubleValue(crtHorizontalBlurRadius(), 1.0) / 20.0,
       crtScanlineEnabled()->isSelected(),
       crtDoubleValue(crtScanlineStrength(), 100.0),
       crtDoubleValue(crtScanlinePower(), 100.0),
+      crtDoubleValue(crtScanlineBrightnessCompensation(), 100.0),
       crtBloomEnabled()->isSelected(),
       crtDoubleValue(crtBloomStrength(), 100.0),
       crtDoubleValue(crtBloomRadius(), 10.0),
       crtDoubleValue(crtBloomThreshold(), 1.0),
+      crtRgbCellsEnabled()->isSelected(),
+      65.0 - crtDoubleValue(crtRgbCellsFadeStartZoom(), 1.0),
+      crtDoubleValue(crtRgbCellsFadePerZoom(), 10.0),
+      crtDoubleValue(crtRgbCellsMinStrength(), 100.0),
+      crtDoubleValue(crtRgbCellsBrightnessCompensation(), 100.0),
+      joinCrtLayerOrder(),
       crtRedrawPadding()->getValue()
     };
   }
@@ -530,10 +693,17 @@ private:
     set_config_bool(kCrtDefaultsSection, "ScanlineEnabled", values.scanlineEnabled);
     set_config_double(kCrtDefaultsSection, "ScanlineOpacity", values.scanlineOpacity);
     set_config_double(kCrtDefaultsSection, "ScanlineRange", values.scanlineRange);
+    set_config_double(kCrtDefaultsSection, "ScanlineBrightnessCompensation", values.scanlineBrightnessCompensation);
     set_config_bool(kCrtDefaultsSection, "BloomEnabled", values.bloomEnabled);
     set_config_double(kCrtDefaultsSection, "BloomStrength", values.bloomStrength);
     set_config_double(kCrtDefaultsSection, "BloomRadius", values.bloomRadius);
     set_config_double(kCrtDefaultsSection, "BloomThreshold", values.bloomThreshold);
+    set_config_bool(kCrtDefaultsSection, "RgbCellsEnabled", values.rgbCellsEnabled);
+    set_config_double(kCrtDefaultsSection, "RgbCellsFadeStartZoom", values.rgbCellsFadeStartZoom);
+    set_config_double(kCrtDefaultsSection, "RgbCellsFadePerZoom", values.rgbCellsFadePerZoom);
+    set_config_double(kCrtDefaultsSection, "RgbCellsMinStrength", values.rgbCellsMinStrength);
+    set_config_double(kCrtDefaultsSection, "RgbCellsBrightnessCompensation", values.rgbCellsBrightnessCompensation);
+    set_config_string(kCrtDefaultsSection, "LayerOrder", values.layerOrder.c_str());
     set_config_int(kCrtDefaultsSection, "RedrawPadding", values.redrawPadding);
   }
 
@@ -718,6 +888,7 @@ private:
   ColorButton* m_pixelGridColor;
   ColorButton* m_gridColor;
   ColorButton* m_cursorColor;
+  std::vector<std::string> m_crtLayerOrder;
   int& m_curSection;
 };
 
